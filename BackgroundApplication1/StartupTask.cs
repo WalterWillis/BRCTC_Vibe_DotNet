@@ -21,7 +21,49 @@ namespace BackgroundApplication1
         {
             Task t = InitSpi();
             t.Wait(); // wait until init is complete
+            TestGyro();
+            TestRegRead();
             GetData();
+        }
+
+        public bool TestGyro()
+        {
+            for (int i = 0; i < 50; i++)
+            {
+                short testbytes = (short)Adis16460.PROD_ID; // Product ID Register
+                byte[] readbuffer = new byte[2];
+                byte[] writeBuffer = BitConverter.GetBytes(testbytes);
+
+                Gyro.TransferFullDuplex(writeBuffer, readbuffer);
+
+                readbuffer = readbuffer.Reverse().ToArray();
+
+                short result = BitConverter.ToInt16(readbuffer, 0);
+
+                System.Diagnostics.Debug.WriteLine("Device ID: " + result);
+
+                if (result == 16460)
+                    return true;
+            }
+
+            return false;
+        }
+
+        public bool TestRegRead()
+        {
+            for (int i = 0; i < 50; i++)
+            {
+                short testbytes = (short)Adis16460.PROD_ID; // Product ID Register
+
+                short result = GyroRegRead(testbytes);
+
+                System.Diagnostics.Debug.WriteLine("Device ID: " + result);
+
+                if (result == 16460)
+                    return true;
+            }
+
+            return false;
         }
 
         private async Task InitSpi()
@@ -30,8 +72,9 @@ namespace BackgroundApplication1
             {
                 var adcSettings = new SpiConnectionSettings(0)                         // Chip Select line 0
                 {
-                    ClockFrequency = 500 * 1000,                                    // Don't exceed 3.6 MHz
-                    Mode = SpiMode.Mode3,
+                    ClockFrequency = 500 * 100,                                    // Don't exceed 3.6 MHz
+                    Mode = SpiMode.Mode0,
+                    SharingMode = SpiSharingMode.Shared
                 };
 
                 string spiAqs = SpiDevice.GetDeviceSelector("SPI0");                /* Find the selector string for the SPI bus controller          */
@@ -41,8 +84,9 @@ namespace BackgroundApplication1
 
                 var gyroSettings = new SpiConnectionSettings(1)                         // Chip Select line 0
                 {
-                    ClockFrequency = 500 * 1000,                                    // Don't exceed 3.6 MHz
+                    ClockFrequency = 500 * 100,                                    // Don't exceed 3.6 MHz
                     Mode = SpiMode.Mode3,
+                    SharingMode = SpiSharingMode.Shared
                 };
 
                 Gyro = controller.GetDevice(gyroSettings);   /* Create an SpiDevice with our bus controller and SPI settings */
@@ -57,11 +101,11 @@ namespace BackgroundApplication1
 
         public void GetData()
         {
-            GryoRegWrite((byte)Adis16460.MSC_CTRL, 0xC1);  // Enable Data Ready, set polarity
+            //GryoRegWrite((short)Adis16460.MSC_CTRL, 0x00C1);  // Enable Data Ready, set polarity
            
-            GryoRegWrite((byte)Adis16460.FLTR_CTRL, 0x500); // Set digital filter
+            GryoRegWrite((short)Adis16460.FLTR_CTRL, 0x500); // Set digital filter
         
-            GryoRegWrite((byte)Adis16460.DEC_RATE, 0); // Disable decimation
+            GryoRegWrite((short)Adis16460.DEC_RATE, 0); // Disable decimation
 
             while (true)
             {
@@ -73,8 +117,8 @@ namespace BackgroundApplication1
                 for (int channel = 0; channel < channels; channel++)
                     adcValues[channel] = ADCRead(channel);
 
-                System.Diagnostics.Debug.WriteLine("Gyro Values:[{0}]", string.Join(", ", data));
-                System.Diagnostics.Debug.WriteLine("ADC Values[{0}]", string.Join(", ", adcValues));
+                System.Diagnostics.Debug.WriteLine("Gyro Values: " + string.Join(", ", data));
+                System.Diagnostics.Debug.WriteLine("ADC Values:" + string.Join(", ", adcValues));
             }
         }
 
@@ -95,71 +139,83 @@ namespace BackgroundApplication1
         }
 
 
-        public void GryoRegWrite(byte regAddr, UInt16 regData)
+        public void GryoRegWrite(short regAddr, short regData)
         {
 
-            UInt16 addr = (UInt16)(((regAddr & 0x7F) | 0x80) << 8);
-            UInt16 lowWord = (UInt16)(addr | (regData & 0xFF));
-            UInt16 highWord = (UInt16)((addr | 0x100) | ((regData >> 8) & 0xFF));
+            byte[] regAddrBytes = BitConverter.GetBytes(regAddr);
+            byte[] dataBytes = BitConverter.GetBytes(regData);
 
             //Split words into chars and place into char array
-            byte[] writeBuffer = { (byte)(highWord >> 8), (byte)(highWord & 0xFF),
-                (byte)(lowWord >> 8), (byte)(lowWord & 0xFF) };
+            byte[] writeBuffer = {regAddrBytes[0], regAddrBytes[1], dataBytes[0], dataBytes[1]};
 
             byte[] readBuffer = new byte[4];
             //Write to SPI bus
             Gyro.TransferFullDuplex(writeBuffer, readBuffer);
         }
 
-        public byte[] GyroRegRead(SpiDevice gyro, byte regAddr)
+        public short GyroRegRead(short regAddr)
         {
             // Write register address to be read
-            byte[] writeBuffer = { regAddr, 0x00 };// Write 0x00 to the SPI bus fill the 16 bit transaction requirement
+            byte[] writeBuffer = BitConverter.GetBytes(regAddr);
             byte[] readBuffer = new byte[2];
 
 
-            gyro.TransferFullDuplex(writeBuffer, readBuffer);
+            Gyro.TransferFullDuplex(writeBuffer, readBuffer);
+
+            short result = BitConverter.ToInt16(readBuffer.Reverse().ToArray(),0);
 
             // Read data from requested register
-            return readBuffer;
+            return result;
         }
 
         public double[] BurstRead()
         {
             byte[] burstdata = new byte[22]; //+2 bytes for the address selection
-            double[] burstwords = new double[10];
+            short[] burstwords = new short[10];
 
             byte[] burstTrigger = { 0x3E, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
 
             Gyro.TransferFullDuplex(burstTrigger, burstdata);
 
-            var checksum = GetChecksum(burstdata);
+            byte[] data = (byte[])burstdata.Skip(2).ToArray();
+            int counter = 0;
 
-            burstwords[0] = (UInt16)((burstdata[2] << 8) | (burstdata[3] & 0xFF)); //DIAG_STAT
-            burstwords[1] = gyroScale((UInt16)((burstdata[4] << 8) | (burstdata[5] & 0xFF)));//XGYRO
-            burstwords[2] = gyroScale((UInt16)((burstdata[6] << 8) | (burstdata[7] & 0xFF))); //YGYRO
-            burstwords[3] = gyroScale((UInt16)((burstdata[8] << 8) | (burstdata[9] & 0xFF))); //ZGYRO
-            burstwords[4] = accelScale((UInt16)((burstdata[10] << 8) | (burstdata[11] & 0xFF))); //XACCEL
-            burstwords[5] = accelScale((UInt16)((burstdata[12] << 8) | (burstdata[13] & 0xFF))); //YACCEL
-            burstwords[6] = accelScale((UInt16)((burstdata[14] << 8) | (burstdata[15] & 0xFF))); //ZACCEL
-            burstwords[7] = tempScale((UInt16)((burstdata[16] << 8) | (burstdata[17] & 0xFF))); //TEMP_OUT
-            burstwords[8] = (UInt16)((burstdata[18] << 8) | (burstdata[19] & 0xFF)); //SMPL_CNTR
-            burstwords[9] = (UInt16)((burstdata[20] << 8) | (burstdata[21] & 0xFF)); //CHECKSUM
-
-            return burstwords;
-        }
-
-        public UInt16 GetChecksum([ReadOnlyArray()] byte[] rdata)
-        {
-            byte[] data = (byte[])rdata.Clone();
-            UInt16 sum = 0;
-            foreach (byte b in data.Skip(2).Take(18)) //take 18 bytes, skipping the empty leading bytes and the trailing checksum bytes
+            for (int i = 0; i < data.Length; i += 2)
             {
-                sum += b;
+                byte[] bytes = data.Skip(i).Take(2).Reverse().ToArray();
+                burstwords[counter++] = BitConverter.ToInt16(bytes, 0);
             }
 
-            return sum;
+            var checksum = GetChecksum(burstwords);
+
+            double[] burstResults = new double[10];
+            burstResults[0] = burstwords[0]; //DIAG_STAT
+            burstResults[1] = gyroScale(burstwords[1]);//XGYRO
+            burstResults[2] = gyroScale(burstwords[2]); //YGYRO
+            burstResults[3] = gyroScale(burstwords[3]); //ZGYRO
+            burstResults[4] = accelScale(burstwords[4]); //XACCEL
+            burstResults[5] = accelScale(burstwords[5]); //YACCEL
+            burstResults[6] = accelScale(burstwords[6]); //ZACCEL
+            burstResults[7] = tempScale(burstwords[7]); //TEMP_OUT
+            burstResults[8] = burstwords[8]; //SMPL_CNTR
+            burstResults[9] = burstwords[9]; //CHECKSUM
+
+            return burstResults;
+        }
+
+        public short GetChecksum([ReadOnlyArray()] short[] rdata)
+        {
+            short[] data = (short[])rdata;
+
+            short s = 0;
+            for (int i = 0; i < 9; i++) // Checksum value is not part of the sum!!
+            {
+                s += (short)(data[i] & 0xFF); // Count lower byte
+                s += (short)((data[i] >> 8) & 0xFF); // Count upper byte
+            }
+
+            return s;
         }
 
 
@@ -170,7 +226,7 @@ namespace BackgroundApplication1
         // sensorData - data output from regRead()
         // return - (double) signed/scaled accelerometer in g's
         /////////////////////////////////////////////////////////////////////////////////////////
-        double accelScale(UInt16 sensorData)
+        double accelScale(short sensorData)
         {
             double finalData = sensorData * 0.00025; // Multiply by accel sensitivity (25 mg/LSB)
             return finalData;
@@ -182,7 +238,7 @@ namespace BackgroundApplication1
         // sensorData - data output from regRead()
         // return - (double) signed/scaled gyro in degrees/sec
         /////////////////////////////////////////////////////////////////////////////////////////
-        double gyroScale(UInt16 sensorData)
+        double gyroScale(short sensorData)
         {
             double finalData = sensorData * 0.005;
             return finalData;
@@ -195,7 +251,7 @@ namespace BackgroundApplication1
         // sensorData - data output from regRead()
         // return - (double) signed/scaled temperature in degrees Celcius
         /////////////////////////////////////////////////////////////////////////////////////////
-        double tempScale(UInt16 sensorData)
+        double tempScale(short sensorData)
         {
             int signedData = 0;
             int isNeg = sensorData & 0x8000;
@@ -213,7 +269,7 @@ namespace BackgroundApplication1
         // sensorData - data output from regRead()
         // return - (double) signed/scaled delta angle in degrees
         /////////////////////////////////////////////////////////////////////////////////////////
-        double deltaAngleScale(UInt16 sensorData)
+        double deltaAngleScale(short sensorData)
         {
             double finalData = sensorData * 0.005; // Multiply by delta angle scale (0.005 degrees/LSB)
             return finalData;
@@ -225,7 +281,7 @@ namespace BackgroundApplication1
         // sensorData - data output from regRead()
         // return - (double) signed/scaled delta velocity in mm/sec
         /////////////////////////////////////////////////////////////////////////////////////////
-        double deltaVelocityScale(UInt16 sensorData)
+        double deltaVelocityScale(short sensorData)
         {
             double finalData = sensorData * 2.5; // Multiply by velocity scale (2.5 mm/sec/LSB)
             return finalData;
@@ -236,7 +292,11 @@ namespace BackgroundApplication1
         {
 
             byte[] readBuffer = new byte[3]; /* Buffer to hold read data*/
-            byte[] writeBuffer = new byte[3] { MCP3208_CONFIG, (byte)(channel | 0x00), 0x00 };
+            //byte[] writeBuffer = new byte[3] { MCP3208_CONFIG, (byte)(channel | 0x00), 0x00 };
+
+            short _fullByte = (short)(0x0400 | (channel << 6));
+
+            byte[] writeBuffer = { (byte)((_fullByte >> 8) & 0xFF), (byte)(_fullByte & 0xFF), 0x00};
 
             ADC.TransferFullDuplex(writeBuffer, readBuffer); /* Read data from the ADC                           */
             double adcValue = ConvertADCResult(readBuffer); /* Convert the returned bytes into an integer value */
@@ -247,62 +307,68 @@ namespace BackgroundApplication1
         {
             byte[] data = (byte[])rdata.Clone();
             double result = 0;
-            //result = data[1] & 0x0F;
-            //result <<= 8;
-            //result += data[2];
 
-            result = ((data[1] & 15) << 8) + data[2];
+            int med = 0;
+            med = data[1] & 0x0F;
+            med <<= 8;
+            med += data[2];
 
-            result = result / (double)4095 * 3.3;
+            //result = ((data[1] & 15) << 8) + data[2];
+            //result = (data[1] & 0xFF) << 8 | (data[2] & 0xFF);
+
+            result = med / (double)4095 * 3.3;
 
             return result;
         }
-        private const byte MCP3208_CONFIG = 0x06; /* 00000110 single mode channel configuration data for the MCP3208 */
+        private const short MCP3208_CONFIG = 0x06; /* 00000110 single mode channel configuration data for the MCP3208 */
 
-        internal enum Adis16460 : byte //Gyro
+        /// <summary>
+        /// Gyro is MSB first. These bytes are reversed for SPI.
+        /// </summary>
+        internal enum Adis16460 : short //Gyro 
         {
             //// User Register Memory Map from Table 6
-            FLASH_CNT = 0x00, //Flash memory write count
-            DIAG_STAT = 0x02, //Diagnostic and operational status
-            X_GYRO_LOW = 0x04, //X-axis gyroscope output, lower word
-            X_GYRO_OUT = 0x06, //X-axis gyroscope output, upper word
-            Y_GYRO_LOW = 0x08, //Y-axis gyroscope output, lower word
-            Y_GYRO_OUT = 0x0A, //Y-axis gyroscope output, upper word
-            Z_GYRO_LOW = 0x0C, //Z-axis gyroscope output, lower word
-            Z_GYRO_OUT = 0x0E, //Z-axis gyroscope output, upper word
-            X_ACCL_LOW = 0x10, //X-axis accelerometer output, lower word
-            X_ACCL_OUT = 0x12, //X-axis accelerometer output, upper word
-            Y_ACCL_LOW = 0x14, //Y-axis accelerometer output, lower word
-            Y_ACCL_OUT = 0x16, //Y-axis accelerometer output, upper word
-            Z_ACCL_LOW = 0x18, //Z-axis accelerometer output, lower word
-            Z_ACCL_OUT = 0x1A, //Z-axis accelerometer output, upper word
-            SMPL_CNTR = 0x1C, //Sample Counter, MSC_CTRL[3:2=11
-            TEMP_OUT = 0x1E, //Temperature output (internal, not calibrated)
-            X_DELT_ANG = 0x24, //X-axis delta angle output
-            Y_DELT_ANG = 0x26, //Y-axis delta angle output
-            Z_DELT_ANG = 0x28, //Z-axis delta angle output
-            X_DELT_VEL = 0x2A, //X-axis delta velocity output
-            Y_DELT_VEL = 0x2C, //Y-axis delta velocity output
-            Z_DELT_VEL = 0x2E, //Z-axis delta velocity output
-            MSC_CTRL = 0x32, //Miscellaneous control
-            SYNC_SCAL = 0x34, //Sync input scale control
-            DEC_RATE = 0x36, //Decimation rate control
-            FLTR_CTRL = 0x38, //Filter control, auto-null record time
-            GLOB_CMD = 0x3E, //Global commands
-            XGYRO_OFF = 0x40, //X-axis gyroscope bias offset error
-            YGYRO_OFF = 0x42, //Y-axis gyroscope bias offset error
-            ZGYRO_OFF = 0x44, //Z-axis gyroscope bias offset factor
-            XACCL_OFF = 0x46, //X-axis acceleration bias offset factor
-            YACCL_OFF = 0x48, //Y-axis acceleration bias offset factor
-            ZACCL_OFF = 0x4A, //Z-axis acceleration bias offset factor
-            LOT_ID1 = 0x52, //Lot identification number
-            LOT_ID2 = 0x54, //Lot identification number
-            PROD_ID = 0x56, //Product identifier
-            SERIAL_NUM = 0x58, //Lot-specific serial number
-            CAL_SGNTR = 0x60, //Calibration memory signature value
-            CAL_CRC = 0x62, //Calibration memory CRC values
-            CODE_SGNTR = 0x64, //Code memory signature value
-            CODE_CRC = 0x66 //Code memory CRC values}
+            FLASH_CNT = 0x0000, //Flash memory write count
+            DIAG_STAT = 0x0200, //Diagnostic and operational status
+            X_GYRO_LOW = 0x0400, //X-axis gyroscope output00, lower word
+            X_GYRO_OUT = 0x0600, //X-axis gyroscope output00, upper word
+            Y_GYRO_LOW = 0x0800, //Y-axis gyroscope output00, lower word
+            Y_GYRO_OUT = 0x0A00, //Y-axis gyroscope output00, upper word
+            Z_GYRO_LOW = 0x0C00, //Z-axis gyroscope output00, lower word
+            Z_GYRO_OUT = 0x0E00, //Z-axis gyroscope output00, upper word
+            X_ACCL_LOW = 0x1000, //X-axis accelerometer output00, lower word
+            X_ACCL_OUT = 0x1200, //X-axis accelerometer output00, upper word
+            Y_ACCL_LOW = 0x1400, //Y-axis accelerometer output00, lower word
+            Y_ACCL_OUT = 0x1600, //Y-axis accelerometer output00, upper word
+            Z_ACCL_LOW = 0x1800, //Z-axis accelerometer output00, lower word
+            Z_ACCL_OUT = 0x1A00, //Z-axis accelerometer output00, upper word
+            SMPL_CNTR = 0x1C00, //Sample Counter00, MSC_CTRL[3:2=11
+            TEMP_OUT = 0x1E00, //Temperature output (internal00, not calibrated)
+            X_DELT_ANG = 0x2400, //X-axis delta angle output
+            Y_DELT_ANG = 0x2600, //Y-axis delta angle output
+            Z_DELT_ANG = 0x2800, //Z-axis delta angle output
+            X_DELT_VEL = 0x2A00, //X-axis delta velocity output
+            Y_DELT_VEL = 0x2C00, //Y-axis delta velocity output
+            Z_DELT_VEL = 0x2E00, //Z-axis delta velocity output
+            MSC_CTRL = 0x3200, //Miscellaneous control
+            SYNC_SCAL = 0x3400, //Sync input scale control
+            DEC_RATE = 0x3600, //Decimation rate control
+            FLTR_CTRL = 0x3800, //Filter control00, auto-null record time
+            GLOB_CMD = 0x3E00, //Global commands
+            XGYRO_OFF = 0x4000, //X-axis gyroscope bias offset error
+            YGYRO_OFF = 0x4200, //Y-axis gyroscope bias offset error
+            ZGYRO_OFF = 0x4400, //Z-axis gyroscope bias offset factor
+            XACCL_OFF = 0x4600, //X-axis acceleration bias offset factor
+            YACCL_OFF = 0x4800, //Y-axis acceleration bias offset factor
+            ZACCL_OFF = 0x4A00, //Z-axis acceleration bias offset factor
+            LOT_ID1 = 0x5200, //Lot identification number
+            LOT_ID2 = 0x5400, //Lot identification number
+            PROD_ID = 0x5600, //Product identifier
+            SERIAL_NUM = 0x5800, //Lot-specific serial number
+            CAL_SGNTR = 0x6000, //Calibration memory signature value
+            CAL_CRC = 0x6200, //Calibration memory CRC values
+            CODE_SGNTR = 0x6400, //Code memory signature value
+            CODE_CRC = 0x6600 //Code memory CRC values}
         }
 
         internal enum MCP3208 : byte //ADC

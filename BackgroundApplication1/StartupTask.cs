@@ -39,7 +39,7 @@ namespace BackgroundApplication1
             GetData();
         }
 
-        public bool TestGyro()
+        private bool TestGyro()
         {
             for (int i = 0; i < 50; i++)
             {
@@ -64,7 +64,7 @@ namespace BackgroundApplication1
             return false;
         }
 
-        public bool TestRegRead()
+        private bool TestRegRead()
         {
             for (int i = 0; i < 50; i++)
             {
@@ -146,23 +146,20 @@ namespace BackgroundApplication1
         private void GetData()
         {
             GryoRegWrite((short)Adis16460.MSC_CTRL, 0x00C1);  // Enable Data Ready, set polarity
-           
+
             GryoRegWrite((short)Adis16460.FLTR_CTRL, 0x0500); // Set digital filter
-        
+
             GryoRegWrite((short)Adis16460.DEC_RATE, 0); // Disable decimation
-            
+
 
             while (true)
             {
                 try
                 {
                     Task dataAquisition = Task.Factory.StartNew(() => AquireData());
-                    Task dataHandling = Task.Factory.StartNew(() => LogData());
                     dataAquisition.Wait();
-                    dataHandling.Wait();
-                    
                 }
-                catch(Exception ex)
+                catch (Exception ex)
                 {
                     Log(ex.Message);
                     Log(ex.StackTrace);
@@ -172,96 +169,65 @@ namespace BackgroundApplication1
 
         private void AquireData()
         {
-            int timeCounter = 0;
-            const int timeRenewal = 2000;
-            DateTime dateTime;
-            lock (Rtc)
-            {
-                dateTime = (DateTime)Rtc.GetCurrentTime();
-            }
-            while(true)
-            {
-                if(timeCounter >= timeRenewal)
-                {
-                    timeCounter = 0;
-                    lock (Rtc)
-                    {
-                        dateTime = (DateTime)Rtc.GetCurrentTime();
-                    }
-                }
-
-                double[] gyroValues = BurstRead(dateTime.Ticks);
-
-                int channels = 3;
-
-                double[] adcValues = new double[channels + 1];
-                for (int channel = 0; channel < channels; channel++)
-                    adcValues[channel] = ADCRead(channel);
-                adcValues[adcValues.Length - 1] = dateTime.Ticks;
-
-
-                lock (gyroQueue)
-                {
-                        gyroQueue.Enqueue(gyroValues);
-                }
-
-                lock (adcQueue)
-                {
-                        adcQueue.Enqueue(adcValues);
-                }
-
-                //System.Diagnostics.Debug.WriteLine("Gyro Values: " + string.Join(", ", data));
-                //System.Diagnostics.Debug.WriteLine("ADC Values:" + string.Join(", ", adcValues));
-                timeCounter++;
-            }
-        }
-
-        public async void LogData()
-        {
-            List<string> gyroLines = new List<string>();
-            List<string> adcLines = new List<string>();
-
-            const int numLines = 10000;
-
-            Task gyroTask = LogAsync("Initializing Gyro Task");
-            gyroTask.Wait();
-            Task adcTask = LogAsync("Initializing ADC Task");
-            adcTask.Wait();
-            Task logTask = LogAsync("Initializing DataHandler Logging Task");
-            logTask.Wait();
+            DateTime startTime = (DateTime)Rtc.GetCurrentTime();
+            Task dataTask = Task.Factory.StartNew(() => Nothing());
+            const int listCount = 30000;
+            int loopCounter = 0;
+            double[][] masterList = new double[listCount][];
+            List<double> subList;
 
             while (true)
             {
-               
-                double[] item = Drain(QueueType.Gyro);
-
-                if (item != null)
-                    gyroLines.Add(string.Join("; ", item));
-
-                item = Drain(QueueType.ADC);
-
-                if (item != null)
-                    adcLines.Add(string.Join("; ", item));
-
-                if (gyroLines.Count > numLines)
+                if (loopCounter >= listCount)
                 {
-                    gyroTask.Wait();
-                    gyroTask = LogGyro(gyroLines);
-                    gyroLines = new List<string>();
-                    logTask.Wait();
-                    logTask = LogAsync("Writing gyro data to file");
+                    if (dataTask.IsCompleted)
+                    {
+                        dataTask.Dispose();
+                        dataTask = Task.Factory.StartNew(() => LogData(masterList));
+                    }
+                    else
+                    {
+                        dataTask.Wait(1000);//any longer than one second and we have an issue.
+                        dataTask.Dispose();
+                        dataTask = Task.Factory.StartNew(() => LogData(masterList));
+                    }
+
+                    loopCounter = 0;
+                    masterList = new double[listCount][];
                 }
 
-                if (adcLines.Count > numLines)
-                {
-                    adcTask.Wait();
-                    adcTask = LogAdc(adcLines);
-                    adcLines = new List<string>();
-                    logTask.Wait();
-                    logTask = LogAsync("Writing adc data to file");
-                }
+                subList = new List<double>();
+                int channels = 3;
 
+                for (int channel = 0; channel < channels; channel++)
+                    subList.Add(ADCRead(channel));
+                subList.Add(((DateTime)Rtc.GetCurrentTime()).Subtract(startTime).TotalSeconds);
+
+                subList.AddRange(BurstRead());
+                subList.Add(((DateTime)Rtc.GetCurrentTime()).Subtract(startTime).TotalSeconds);
+                masterList[loopCounter] = subList.ToArray();
+                loopCounter++;
+
+                //System.Diagnostics.Debug.WriteLine("Gyro Values: " + string.Join(", ", data));
+                //System.Diagnostics.Debug.WriteLine("ADC Values:" + string.Join(", ", adcValues));
             }
+        }
+
+        /// <summary>
+        /// Used to create a blank task
+        /// </summary>
+        private void Nothing()
+        {
+            //does nothing
+        }
+
+        private void LogData(double[][] data)
+        {
+            // foreach (double[] d in data)
+            logger.DataBucket = data; //writes to property that stores the result seperately
+
+            logger.StoreData(); //saves data from stored list
+
         }
 
         private async Task LogGyro(IEnumerable<string> data)
@@ -279,7 +245,7 @@ namespace BackgroundApplication1
             double[] item = null;
 
             switch (type)
-            {               
+            {
                 case QueueType.ADC:
                     lock (gyroQueue)
                     {
@@ -310,7 +276,7 @@ namespace BackgroundApplication1
         /// </summary>
         /// <param name="data"></param>
         /// <returns></returns>
-        public static int ConvertToInt([ReadOnlyArray()] byte[] rdata)
+        internal static int ConvertToInt([ReadOnlyArray()] byte[] rdata)
         {
             byte[] data = (byte[])rdata.Clone();
             int result = 0;
@@ -321,21 +287,21 @@ namespace BackgroundApplication1
         }
 
 
-        public void GryoRegWrite(short regAddr, short regData)
+        internal void GryoRegWrite(short regAddr, short regData)
         {
 
             byte[] regAddrBytes = BitConverter.GetBytes(regAddr);
             byte[] dataBytes = BitConverter.GetBytes(regData);
 
             //Split words into chars and place into char array
-            byte[] writeBuffer = {regAddrBytes[0], regAddrBytes[1], dataBytes[0], dataBytes[1]};
+            byte[] writeBuffer = { regAddrBytes[0], regAddrBytes[1], dataBytes[0], dataBytes[1] };
 
             byte[] readBuffer = new byte[4];
             //Write to SPI bus
             Gyro.TransferFullDuplex(writeBuffer, readBuffer);
         }
 
-        public short GyroRegRead(short regAddr)
+        internal short GyroRegRead(short regAddr)
         {
             // Write register address to be read
             byte[] writeBuffer = BitConverter.GetBytes(regAddr);
@@ -344,13 +310,13 @@ namespace BackgroundApplication1
 
             Gyro.TransferFullDuplex(writeBuffer, readBuffer);
             readBuffer = readBuffer.Reverse().ToArray();
-            short result = BitConverter.ToInt16(readBuffer,0);
+            short result = BitConverter.ToInt16(readBuffer, 0);
 
             // Read data from requested register
             return result;
         }
 
-        public double[] BurstRead(long timeTicks)
+        internal double[] BurstRead()
         {
             byte[] burstdata = new byte[22]; //+2 bytes for the address selection
             short[] burstwords = new short[10];
@@ -371,7 +337,7 @@ namespace BackgroundApplication1
 
             var checksum = GetChecksum(burstwords);
 
-            double[] burstResults = new double[11];
+            double[] burstResults = new double[10];
             burstResults[0] = burstwords[0]; //DIAG_STAT
             burstResults[1] = gyroScale(burstwords[1]);//XGYRO
             burstResults[2] = gyroScale(burstwords[2]); //YGYRO
@@ -382,12 +348,11 @@ namespace BackgroundApplication1
             burstResults[7] = tempScale(burstwords[7]); //TEMP_OUT
             burstResults[8] = burstwords[8]; //SMPL_CNTR
             burstResults[9] = burstwords[9]; //CHECKSUM
-            burstResults[10] = timeTicks;
 
             return burstResults;
         }
 
-        public short GetChecksum([ReadOnlyArray()] short[] rdata)
+        internal short GetChecksum([ReadOnlyArray()] short[] rdata)
         {
             short[] data = (short[])rdata;
 
@@ -471,7 +436,7 @@ namespace BackgroundApplication1
         }
 
 
-        public double ADCRead(int channel)
+        internal double ADCRead(int channel)
         {
 
             byte[] readBuffer = new byte[3]; /* Buffer to hold read data*/
@@ -479,14 +444,14 @@ namespace BackgroundApplication1
 
             short _fullByte = (short)(0x0400 | (channel << 6));
 
-            byte[] writeBuffer = { (byte)((_fullByte >> 8) & 0xFF), (byte)(_fullByte & 0xFF), 0x00};
+            byte[] writeBuffer = { (byte)((_fullByte >> 8) & 0xFF), (byte)(_fullByte & 0xFF), 0x00 };
 
             ADC.TransferFullDuplex(writeBuffer, readBuffer); /* Read data from the ADC                           */
             double adcValue = ConvertADCResult(readBuffer); /* Convert the returned bytes into an integer value */
             return adcValue;
         }
 
-        public double ConvertADCResult([ReadOnlyArray()] byte[] rdata)
+        internal double ConvertADCResult([ReadOnlyArray()] byte[] rdata)
         {
             byte[] data = (byte[])rdata.Clone();
             double result = 0;

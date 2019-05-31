@@ -8,7 +8,7 @@ using Windows.Devices.I2c;
 
 namespace BackgroundApplication1
 {
-    public sealed class RTC
+    internal sealed class RTC
     {
         private byte I2C_ADDRESS = 0x68;
         private I2cDevice rtc;

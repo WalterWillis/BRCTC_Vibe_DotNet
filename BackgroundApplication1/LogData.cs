@@ -6,21 +6,36 @@ using System.Threading.Tasks;
 using System.Runtime.InteropServices.WindowsRuntime;
 using System.IO;
 using Windows.Storage;
-using Windows.Security.Cryptography;
+using Windows.Storage.Streams;
 using Windows.Foundation;
+using Windows.Security.Cryptography;
 
 namespace BackgroundApplication1
 {
-    public sealed class LogData
+    internal sealed class LogData
     {
         private StorageFile _gyroFile;
         private StorageFile _adcFile;
+        private StorageFile _dataFile;
         private StorageFile _logFile;
         private int _gyroLineCount;
+        private int _dataLineCount;
         internal DateTime _dateTime;
         private StorageFolder storageFolder;
         private int _adcLineCount;
         private const int LINE_LIMIT = 1000000;
+
+        private List<double[]> _data = new List<double[]>();
+        public double[][] DataBucket { get; set; }
+        //{
+        //    get { return new double[0]; } // do not use this
+        //    set
+        //    {
+        //        _data.Add(value);
+        //    }
+        //}
+
+
 
         public LogData(object dateTime)
         {
@@ -33,14 +48,16 @@ namespace BackgroundApplication1
 
         private void SetupLogger()
         {
-            Task dir = CreateDirectory();
-            dir.Wait();
-            Task Gyro = CreateGyroFile();
-            Gyro.Wait();
-            Task Adc = CreateAdcFile();
-            Adc.Wait();
-            Task Logs = CreateLogFile();
-            Logs.Wait();
+            Task t = CreateDirectory();
+            t.Wait();
+            t = CreateDataFile();
+            t.Wait();
+            t = CreateGyroFile();
+            t.Wait();
+            t = CreateAdcFile();
+            t.Wait();
+            t = CreateLogFile();
+            t.Wait();
         }
 
         private async Task CreateDirectory()
@@ -65,6 +82,11 @@ namespace BackgroundApplication1
         private async Task CreateAdcFile()
         {
             _adcFile = await storageFolder.CreateFileAsync("ADC.txt", CreationCollisionOption.GenerateUniqueName);
+        }
+
+        private async Task CreateDataFile()
+        {
+            _dataFile = await storageFolder.CreateFileAsync("Launch.txt", CreationCollisionOption.GenerateUniqueName);
         }
 
         private async Task CreateLogFile()
@@ -133,6 +155,37 @@ namespace BackgroundApplication1
             string text = await FileIO.ReadTextAsync(_logFile);
 
             System.Diagnostics.Debug.WriteLine(text);
+        }
+
+        public async void StoreData()
+        {
+            var stream = await _dataFile.OpenAsync(FileAccessMode.ReadWrite, StorageOpenOptions.AllowReadersAndWriters);
+
+            using (var outputStream = stream.GetOutputStreamAt(0))
+            {
+                using (var dataWriter = new Windows.Storage.Streams.DataWriter(outputStream))
+                {
+                    const string delinieater = ";";
+                    foreach (double[] data in _data)
+                    {
+                        foreach (double d in data)
+                        {
+                            dataWriter.WriteDouble(d);
+                            dataWriter.WriteString(delinieater);
+                        }
+                    }
+                    await dataWriter.FlushAsync();
+                }
+            }
+            stream.Dispose();
+
+            _dataLineCount += _data.Count();
+
+            if (_dataLineCount >= LINE_LIMIT)
+            {
+                await CreateDataFile();
+            }
+            _data = new List<double[]>();
         }
     }
 }

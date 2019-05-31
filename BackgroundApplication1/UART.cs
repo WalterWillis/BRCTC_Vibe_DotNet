@@ -8,7 +8,7 @@ using Windows.Storage.Streams;
 //adapted from : https://raspberrypi.stackexchange.com/questions/91854/uart-raspberry-pi-iot-windows-iot-core
 namespace BackgroundApplication1
 {
-    public sealed partial class UART
+    internal sealed partial class UART
     {
         private SerialDevice SerialPort;
         private DataWriter dataWriter;

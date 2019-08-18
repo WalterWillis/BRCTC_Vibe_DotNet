@@ -1,1 +1,3 @@
-BackgroundApplication1\obj\
+BackgroundApplication1/obj/
+BackgroundApplication1/bin/
+.vs
